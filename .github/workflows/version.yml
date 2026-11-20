@@ -38,11 +38,18 @@ jobs:
         if: env.BASE_REF == 'develop'
         run: |
           set -euo pipefail
-          ver() { jq -r .version; }
+          ver() {
+            local v
+            v=$(jq -r '.version // empty') || { echo "::error::package.json is not valid JSON" >&2; return 1; }
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::package.json version '${v}' must be X.Y.Z" >&2; return 1; }
+            echo "$v"
+          }
+          show() { git show "$1:package.json" 2>/dev/null || { echo "::error::package.json not found at $1" >&2; return 1; }; }
+          [ -f package.json ] || { echo "::error::package.json not found in repository root" >&2; exit 1; }
 
-          before=$(git show "${MERGE_SHA}^1:package.json" | ver)   # develop before the merge
-          merged=$(git show "${MERGE_SHA}:package.json" | ver)     # version in the merged code
-          current=$(ver < package.json)                            # develop HEAD (includes earlier bumps)
+          before=$(show "${MERGE_SHA}^1" | ver)   # develop before the merge
+          merged=$(show "${MERGE_SHA}" | ver)     # version in the merged code
+          current=$(ver < package.json)           # develop HEAD (includes earlier bumps)
 
           IFS=. read -r b_maj b_min _ <<< "$before"
           IFS=. read -r m_maj m_min _ <<< "$merged"
@@ -73,7 +80,14 @@ jobs:
         run: |
           set -euo pipefail
           [ "$HEAD_REF" = "develop" ] || { echo "Not from develop; nothing to do."; exit 0; }
-          tag="v$(jq -r .version package.json)-qa"
+          ver() {
+            local v
+            v=$(jq -r '.version // empty') || { echo "::error::package.json is not valid JSON" >&2; return 1; }
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::package.json version '${v}' must be X.Y.Z" >&2; return 1; }
+            echo "$v"
+          }
+          [ -f package.json ] || { echo "::error::package.json not found in repository root" >&2; exit 1; }
+          tag="v$(ver < package.json)-qa"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
             echo "::error::Tag ${tag} already exists"; exit 1
           fi
@@ -86,7 +100,14 @@ jobs:
         run: |
           set -euo pipefail
           [ "$HEAD_REF" = "qa" ] || { echo "Not from qa; nothing to do."; exit 0; }
-          tag="v$(jq -r .version package.json)"
+          ver() {
+            local v
+            v=$(jq -r '.version // empty') || { echo "::error::package.json is not valid JSON" >&2; return 1; }
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::package.json version '${v}' must be X.Y.Z" >&2; return 1; }
+            echo "$v"
+          }
+          [ -f package.json ] || { echo "::error::package.json not found in repository root" >&2; exit 1; }
+          tag="v$(ver < package.json)"
           if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
             echo "::error::Tag ${tag} already exists"; exit 1
           fi

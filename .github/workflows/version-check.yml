@@ -29,11 +29,18 @@ jobs:
       - name: Compute tag and check it is free
         run: |
           set -euo pipefail
-          ver() { jq -r .version; }
+          ver() {
+            local v
+            v=$(jq -r '.version // empty') || { echo "::error::package.json is not valid JSON" >&2; return 1; }
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::package.json version '${v}' must be X.Y.Z" >&2; return 1; }
+            echo "$v"
+          }
+          show() { git show "$1:package.json" 2>/dev/null || { echo "::error::package.json not found at $1" >&2; return 1; }; }
+          [ -f package.json ] || { echo "::error::package.json not found in repository root" >&2; exit 1; }
 
           case "$BASE_REF" in
             develop)
-              before=$(git show HEAD^1:package.json | ver)   # develop tip
+              before=$(show HEAD^1 | ver)                    # develop tip
               merged=$(ver < package.json)                   # merge result
               IFS=. read -r b_maj b_min b_pat <<< "$before"
               IFS=. read -r m_maj m_min _ <<< "$merged"
