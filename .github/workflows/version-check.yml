@@ -1,0 +1,62 @@
+name: Version check
+
+# Pre-merge check: computes the tag the post-merge workflow (version.yml) would
+# create and fails if it already exists. Make this a required status check.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [develop, qa, master]
+
+permissions:
+  contents: read
+
+jobs:
+  check-tag:
+    runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      HEAD_REF: ${{ github.head_ref }}
+    steps:
+      # Default checkout is the test merge of the PR into its base branch,
+      # so HEAD^1 is the base tip and HEAD is what the merge would produce.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --tags --force
+
+      - name: Compute tag and check it is free
+        run: |
+          set -euo pipefail
+          ver() { jq -r .version; }
+
+          case "$BASE_REF" in
+            develop)
+              before=$(git show HEAD^1:package.json | ver)   # develop tip
+              merged=$(ver < package.json)                   # merge result
+              IFS=. read -r b_maj b_min b_pat <<< "$before"
+              IFS=. read -r m_maj m_min _ <<< "$merged"
+
+              if [ "$b_maj" != "$m_maj" ] || [ "$b_min" != "$m_min" ]; then
+                new="${m_maj}.${m_min}.0"
+              else
+                new="${b_maj}.${b_min}.$((b_pat + 1))"
+              fi
+              tag="v${new}-dev"
+              ;;
+            qa)
+              [ "$HEAD_REF" = "develop" ] || { echo "Not from develop; no tag will be created."; exit 0; }
+              tag="v$(ver < package.json)-qa"
+              ;;
+            master)
+              [ "$HEAD_REF" = "qa" ] || { echo "Not from qa; no tag will be created."; exit 0; }
+              tag="v$(ver < package.json)"
+              ;;
+          esac
+
+          echo "Merging this PR would create tag: ${tag}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::Tag ${tag} already exists; this PR cannot be merged as-is"
+            exit 1
+          fi
