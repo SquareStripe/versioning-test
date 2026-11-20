@@ -1,0 +1,115 @@
+name: Version and tag
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [develop, qa, master]
+
+permissions:
+  contents: write
+
+# Serialise runs per target branch so patch numbers never race.
+concurrency:
+  group: versioning-${{ github.event.pull_request.base.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.event.pull_request.base.ref }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch --tags --force
+
+      # ---------- develop: bump version, commit, tag vX.Y.Z-dev ----------
+      - name: Bump version on develop
+        if: env.BASE_REF == 'develop'
+        run: |
+          set -euo pipefail
+          ver() {
+            local v
+            v=$(jq -r '.version // empty') || { echo "::error::package.json is not valid JSON" >&2; return 1; }
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::package.json version '${v}' must be X.Y.Z" >&2; return 1; }
+            echo "$v"
+          }
+          show() { git show "$1:package.json" 2>/dev/null || { echo "::error::package.json not found at $1" >&2; return 1; }; }
+          [ -f package.json ] || { echo "::error::package.json not found in repository root" >&2; exit 1; }
+
+          before=$(show "${MERGE_SHA}^1" | ver)   # develop before the merge
+          merged=$(show "${MERGE_SHA}" | ver)     # version in the merged code
+          current=$(ver < package.json)           # develop HEAD (includes earlier bumps)
+
+          IFS=. read -r b_maj b_min _ <<< "$before"
+          IFS=. read -r m_maj m_min _ <<< "$merged"
+          IFS=. read -r c_maj c_min c_pat <<< "$current"
+
+          if [ "$b_maj" != "$m_maj" ] || [ "$b_min" != "$m_min" ]; then
+            new="${m_maj}.${m_min}.0"                 # major/minor changed: reset patch
+          else
+            new="${c_maj}.${c_min}.$((c_pat + 1))"    # patch always comes from develop
+          fi
+
+          tag="v${new}-dev"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::Tag ${tag} already exists"; exit 1
+          fi
+
+          jq --arg v "$new" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          git add package.json
+          git commit -m "chore: bump version to ${new} [skip ci]"
+          git tag "$tag"
+          git push origin "HEAD:${BASE_REF}" "$tag"
+          echo "Released ${tag}"
+
+      # ---------- qa: develop -> qa, no version change, tag vX.Y.Z-qa ----------
+      - name: Tag qa
+        if: env.BASE_REF == 'qa'
+        run: |
+          set -euo pipefail
+          [ "$HEAD_REF" = "develop" ] || { echo "Not from develop; nothing to do."; exit 0; }
+          ver() {
+            local v
+            v=$(jq -r '.version // empty') || { echo "::error::package.json is not valid JSON" >&2; return 1; }
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::package.json version '${v}' must be X.Y.Z" >&2; return 1; }
+            echo "$v"
+          }
+          [ -f package.json ] || { echo "::error::package.json not found in repository root" >&2; exit 1; }
+          tag="v$(ver < package.json)-qa"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::Tag ${tag} already exists"; exit 1
+          fi
+          git tag "$tag" "$MERGE_SHA"
+          git push origin "$tag"
+
+      # ---------- master: qa -> master, drop suffix, tag vX.Y.Z ----------
+      - name: Tag master
+        if: env.BASE_REF == 'master'
+        run: |
+          set -euo pipefail
+          [ "$HEAD_REF" = "qa" ] || { echo "Not from qa; nothing to do."; exit 0; }
+          ver() {
+            local v
+            v=$(jq -r '.version // empty') || { echo "::error::package.json is not valid JSON" >&2; return 1; }
+            [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::package.json version '${v}' must be X.Y.Z" >&2; return 1; }
+            echo "$v"
+          }
+          [ -f package.json ] || { echo "::error::package.json not found in repository root" >&2; exit 1; }
+          tag="v$(ver < package.json)"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            echo "::error::Tag ${tag} already exists"; exit 1
+          fi
+          git tag "$tag" "$MERGE_SHA"
+          git push origin "$tag"
